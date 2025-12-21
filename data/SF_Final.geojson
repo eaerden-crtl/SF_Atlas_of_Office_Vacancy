@@ -1,0 +1,51 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "bldg-1",
+        "number": "1",
+        "street": "Market St",
+        "postcode": "94103",
+        "height": 120,
+        "Percentage_vacant": 0.35
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-122.401, 37.792],
+            [-122.401, 37.793],
+            [-122.4, 37.793],
+            [-122.4, 37.792],
+            [-122.401, 37.792]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "bldg-2",
+        "number": "10",
+        "street": "Mission St",
+        "postcode": "94105",
+        "height": 80,
+        "Percentage_vacant": 0.6
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-122.3985, 37.7895],
+            [-122.3985, 37.7902],
+            [-122.3977, 37.7902],
+            [-122.3977, 37.7895],
+            [-122.3985, 37.7895]
+          ]
+        ]
+      }
+    }
+  ]
+}
