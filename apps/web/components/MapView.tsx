@@ -15,6 +15,13 @@ interface BuildingProperties {
   postcode?: string;
   height?: number;
   Percentage_vacant?: number;
+  percentage_vacant?: number;
+  names?: {
+    primary?: string;
+    common?: string;
+  };
+  class?: string;
+  subtype?: string;
   [key: string]: unknown;
 }
 
@@ -26,10 +33,15 @@ const INITIAL_VIEW_STATE = {
   bearing: -20
 };
 
-const BASE_COLOR = [160, 160, 160, 220];
-const BASE_HIGHLIGHT = [120, 136, 248, 240];
-const VACANCY_COLOR = [239, 90, 50, 220];
-const VACANCY_HIGHLIGHT = [255, 140, 90, 240];
+const BASE_COLOR = [190, 220, 235, 180] as const;
+const BASE_HIGHLIGHT = [160, 200, 230, 240] as const;
+const VACANCY_COLOR = [35, 60, 120, 220] as const;
+const VACANCY_HIGHLIGHT = [55, 90, 160, 240] as const;
+
+function toCssRgba(color: readonly number[]): string {
+  const [r, g, b, a] = color;
+  return `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(2)})`;
+}
 
 function hashStringToSeed(value: string): number {
   let hash = 0;
@@ -68,6 +80,55 @@ function addBaseToGeometry(geometry: Geometry, base: number): Geometry {
 
 function addBaseToRing(ring: Position[], base: number): Position[] {
   return ring.map(([lng, lat]) => [lng, lat, base]);
+}
+
+function getBuildingName(props?: BuildingProperties): string | null {
+  if (!props || !props.names) return null;
+
+  const primary = typeof props.names.primary === 'string' ? props.names.primary.trim() : '';
+  if (primary) return primary;
+
+  const common = typeof props.names.common === 'string' ? props.names.common.trim() : '';
+  return common || null;
+}
+
+function getBuildingUse(props?: BuildingProperties): string | null {
+  if (!props) return null;
+
+  const primary = typeof props.class === 'string' ? props.class.trim() : '';
+  if (primary) return primary;
+
+  const fallback = typeof props.subtype === 'string' ? props.subtype.trim() : '';
+  return fallback || null;
+}
+
+function formatAddress(props?: BuildingProperties): string | null {
+  if (!props) return null;
+
+  const parts = [props.number, props.street, props.postcode]
+    .map((part) => (typeof part === 'string' ? part.trim() : ''))
+    .filter(Boolean);
+
+  return parts.length ? parts.join(' ') : null;
+}
+
+function formatVacancy(props?: BuildingProperties): string | null {
+  if (!props) return null;
+
+  const raw = props.Percentage_vacant ?? props.percentage_vacant;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatHeight(props?: BuildingProperties): string | null {
+  if (!props) return null;
+
+  const height = Number(props.height);
+  if (!Number.isFinite(height)) return null;
+
+  return `${height} m`;
 }
 
 type BuildingFeature = Feature<Geometry, BuildingProperties & { vacancyHeight?: number; baseOffset?: number }>;
@@ -149,7 +210,7 @@ export default function MapView() {
       filled: true,
       getElevation: (f: BuildingFeature) => Number(f.properties?.height) || 0,
       getFillColor: (f: BuildingFeature) => (f.properties?.id === selectedId ? BASE_HIGHLIGHT : BASE_COLOR),
-      getLineColor: [100, 100, 100],
+      getLineColor: [120, 160, 190],
       onClick: onFeatureClick,
       updateTriggers: {
         getFillColor: [selectedId]
@@ -169,7 +230,7 @@ export default function MapView() {
       filled: true,
       getElevation: (f: BuildingFeature) => Number(f.properties?.vacancyHeight) || 0,
       getFillColor: (f: BuildingFeature) => (f.properties?.id === selectedId ? VACANCY_HIGHLIGHT : VACANCY_COLOR),
-      getLineColor: [200, 90, 50],
+      getLineColor: [35, 60, 120],
       onClick: onFeatureClick,
       updateTriggers: {
         getFillColor: [selectedId]
@@ -178,6 +239,13 @@ export default function MapView() {
   }, [vacancyFeatures, selectedId, onFeatureClick]);
 
   const layers = useMemo(() => [baseLayer, vacancyLayer].filter(Boolean), [baseLayer, vacancyLayer]);
+
+  const selectedProps = selectedFeature?.properties;
+  const buildingName = getBuildingName(selectedProps);
+  const buildingUse = getBuildingUse(selectedProps);
+  const address = formatAddress(selectedProps);
+  const vacancy = formatVacancy(selectedProps);
+  const height = formatHeight(selectedProps);
 
   return (
     <div className="layout">
@@ -190,30 +258,48 @@ export default function MapView() {
           />
         </DeckGL>
         <div className="legend">
-          <div><span className="swatch" style={{ background: 'rgba(160,160,160,0.86)' }} /> Base building</div>
-          <div><span className="swatch" style={{ background: 'rgba(239,90,50,0.86)' }} /> Internal vacancy volume</div>
+          <div>
+            <span className="swatch" style={{ background: toCssRgba(BASE_COLOR) }} /> Base building
+          </div>
+          <div>
+            <span className="swatch" style={{ background: toCssRgba(VACANCY_COLOR) }} /> Internal vacancy volume
+          </div>
         </div>
       </div>
       <aside className="sidebar">
         <h2>Building details</h2>
         {selectedFeature ? (
           <dl>
-            <dt>ID</dt>
-            <dd>{selectedFeature.properties?.id ?? 'Unknown'}</dd>
-            <dt>Number</dt>
-            <dd>{selectedFeature.properties?.number ?? '—'}</dd>
-            <dt>Street</dt>
-            <dd>{selectedFeature.properties?.street ?? '—'}</dd>
-            <dt>Postcode</dt>
-            <dd>{selectedFeature.properties?.postcode ?? '—'}</dd>
-            <dt>Height (m)</dt>
-            <dd>{selectedFeature.properties?.height ?? '—'}</dd>
-            <dt>Percentage vacant</dt>
-            <dd>
-              {Number.isFinite(Number(selectedFeature.properties?.Percentage_vacant))
-                ? `${(Number(selectedFeature.properties?.Percentage_vacant) * 100).toFixed(1)}%`
-                : '—'}
-            </dd>
+            {buildingName && (
+              <>
+                <dt>Building Name</dt>
+                <dd>{buildingName}</dd>
+              </>
+            )}
+            {buildingUse && (
+              <>
+                <dt>Building current use</dt>
+                <dd>{buildingUse}</dd>
+              </>
+            )}
+            {address && (
+              <>
+                <dt>Address</dt>
+                <dd>{address}</dd>
+              </>
+            )}
+            {vacancy && (
+              <>
+                <dt>Percentage vacant</dt>
+                <dd>{vacancy}</dd>
+              </>
+            )}
+            {height && (
+              <>
+                <dt>Building height</dt>
+                <dd>{height}</dd>
+              </>
+            )}
           </dl>
         ) : (
           <div className="placeholder">Click a building to view its attributes.</div>
