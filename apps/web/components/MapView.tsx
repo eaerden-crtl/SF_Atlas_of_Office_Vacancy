@@ -15,6 +15,13 @@ interface BuildingProperties {
   postcode?: string;
   height?: number;
   Percentage_vacant?: number;
+  percentage_vacant?: number;
+  names?: {
+    primary?: string;
+    common?: string;
+  };
+  class?: string;
+  subtype?: string;
   [key: string]: unknown;
 }
 
@@ -73,6 +80,55 @@ function addBaseToGeometry(geometry: Geometry, base: number): Geometry {
 
 function addBaseToRing(ring: Position[], base: number): Position[] {
   return ring.map(([lng, lat]) => [lng, lat, base]);
+}
+
+function getBuildingName(props?: BuildingProperties): string | null {
+  if (!props || !props.names) return null;
+
+  const primary = typeof props.names.primary === 'string' ? props.names.primary.trim() : '';
+  if (primary) return primary;
+
+  const common = typeof props.names.common === 'string' ? props.names.common.trim() : '';
+  return common || null;
+}
+
+function getBuildingUse(props?: BuildingProperties): string | null {
+  if (!props) return null;
+
+  const primary = typeof props.class === 'string' ? props.class.trim() : '';
+  if (primary) return primary;
+
+  const fallback = typeof props.subtype === 'string' ? props.subtype.trim() : '';
+  return fallback || null;
+}
+
+function formatAddress(props?: BuildingProperties): string | null {
+  if (!props) return null;
+
+  const parts = [props.number, props.street, props.postcode]
+    .map((part) => (typeof part === 'string' ? part.trim() : ''))
+    .filter(Boolean);
+
+  return parts.length ? parts.join(' ') : null;
+}
+
+function formatVacancy(props?: BuildingProperties): string | null {
+  if (!props) return null;
+
+  const raw = props.Percentage_vacant ?? props.percentage_vacant;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatHeight(props?: BuildingProperties): string | null {
+  if (!props) return null;
+
+  const height = Number(props.height);
+  if (!Number.isFinite(height)) return null;
+
+  return `${height} m`;
 }
 
 type BuildingFeature = Feature<Geometry, BuildingProperties & { vacancyHeight?: number; baseOffset?: number }>;
@@ -184,6 +240,13 @@ export default function MapView() {
 
   const layers = useMemo(() => [baseLayer, vacancyLayer].filter(Boolean), [baseLayer, vacancyLayer]);
 
+  const selectedProps = selectedFeature?.properties;
+  const buildingName = getBuildingName(selectedProps);
+  const buildingUse = getBuildingUse(selectedProps);
+  const address = formatAddress(selectedProps);
+  const vacancy = formatVacancy(selectedProps);
+  const height = formatHeight(selectedProps);
+
   return (
     <div className="layout">
       <div className="map-container">
@@ -207,22 +270,36 @@ export default function MapView() {
         <h2>Building details</h2>
         {selectedFeature ? (
           <dl>
-            <dt>ID</dt>
-            <dd>{selectedFeature.properties?.id ?? 'Unknown'}</dd>
-            <dt>Number</dt>
-            <dd>{selectedFeature.properties?.number ?? '—'}</dd>
-            <dt>Street</dt>
-            <dd>{selectedFeature.properties?.street ?? '—'}</dd>
-            <dt>Postcode</dt>
-            <dd>{selectedFeature.properties?.postcode ?? '—'}</dd>
-            <dt>Height (m)</dt>
-            <dd>{selectedFeature.properties?.height ?? '—'}</dd>
-            <dt>Percentage vacant</dt>
-            <dd>
-              {Number.isFinite(Number(selectedFeature.properties?.Percentage_vacant))
-                ? `${(Number(selectedFeature.properties?.Percentage_vacant) * 100).toFixed(1)}%`
-                : '—'}
-            </dd>
+            {buildingName && (
+              <>
+                <dt>Building Name</dt>
+                <dd>{buildingName}</dd>
+              </>
+            )}
+            {buildingUse && (
+              <>
+                <dt>Building current use</dt>
+                <dd>{buildingUse}</dd>
+              </>
+            )}
+            {address && (
+              <>
+                <dt>Address</dt>
+                <dd>{address}</dd>
+              </>
+            )}
+            {vacancy && (
+              <>
+                <dt>Percentage vacant</dt>
+                <dd>{vacancy}</dd>
+              </>
+            )}
+            {height && (
+              <>
+                <dt>Building height</dt>
+                <dd>{height}</dd>
+              </>
+            )}
           </dl>
         ) : (
           <div className="placeholder">Click a building to view its attributes.</div>
