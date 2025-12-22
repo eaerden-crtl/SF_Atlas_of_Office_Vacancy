@@ -6,6 +6,7 @@ import { GeoJsonLayer } from '@deck.gl/layers';
 import Map from 'react-map-gl/maplibre';
 import maplibregl from 'maplibre-gl';
 import type { Feature, FeatureCollection, Geometry, Position } from 'geojson';
+import area from '@turf/area';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 interface BuildingProperties {
@@ -22,6 +23,13 @@ interface BuildingProperties {
   };
   class?: string;
   subtype?: string;
+  stories?: number;
+  storeys?: number;
+  levels?: number;
+  floors?: number;
+  num_floors?: number;
+  floor_count?: number;
+  building_levels?: number;
   [key: string]: unknown;
 }
 
@@ -41,6 +49,10 @@ const VACANCY_HIGHLIGHT = [55, 90, 160, 240] as const;
 function toCssRgba(color: readonly number[]): string {
   const [r, g, b, a] = color;
   return `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(2)})`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function hashStringToSeed(value: string): number {
@@ -112,16 +124,6 @@ function formatAddress(props?: BuildingProperties): string | null {
   return parts.length ? parts.join(' ') : null;
 }
 
-function formatVacancy(props?: BuildingProperties): string | null {
-  if (!props) return null;
-
-  const raw = props.Percentage_vacant ?? props.percentage_vacant;
-  const value = Number(raw);
-  if (!Number.isFinite(value)) return null;
-
-  return `${Math.round(value * 100)}%`;
-}
-
 function formatHeight(props?: BuildingProperties): string | null {
   if (!props) return null;
 
@@ -131,12 +133,107 @@ function formatHeight(props?: BuildingProperties): string | null {
   return `${height} m`;
 }
 
+function formatArea(value?: number | null): string | null {
+  if (value === null || value === undefined || Number.isNaN(value)) return null;
+
+  const formatted = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value);
+  return `${formatted} m²`;
+}
+
+function formatVacancyValue(value?: number | null): string | null {
+  if (value === null || value === undefined || Number.isNaN(value)) return null;
+  return `${Math.round(value * 100)}%`;
+}
+
+function getStories(props?: BuildingProperties): number | null {
+  if (!props) return null;
+
+  const keys: (keyof BuildingProperties)[] = [
+    'stories',
+    'storeys',
+    'levels',
+    'floors',
+    'num_floors',
+    'floor_count',
+    'building_levels'
+  ];
+
+  for (const key of keys) {
+    const raw = props[key];
+    const value = Number(raw);
+    if (Number.isFinite(value) && value > 0) {
+      return Math.round(value);
+    }
+  }
+
+  return null;
+}
+
+function getFootprintAreaM2(feature: Feature<Geometry> | null | undefined): number | null {
+  if (!feature) return null;
+
+  try {
+    const computed = area(feature as Feature<Geometry>);
+    if (!Number.isFinite(computed) || computed <= 0) return null;
+    return computed;
+  } catch (err) {
+    console.error('Failed to compute area', err);
+    return null;
+  }
+}
+
+function getFloors(height?: number): number | null {
+  if (!Number.isFinite(height) || !height || height <= 0) return null;
+  const floors = Math.max(Math.round(height / 3.4), 1);
+  return floors;
+}
+
+function getTotalAreaM2(footprintArea?: number | null, floors?: number | null): number | null {
+  if (!Number.isFinite(footprintArea || 0) || footprintArea === null || footprintArea === undefined) return null;
+  if (!Number.isFinite(floors || 0) || floors === null || floors === undefined) return null;
+  return footprintArea * floors;
+}
+
+function hasVacancyData(props?: BuildingProperties): boolean {
+  if (!props) return false;
+  const raw = props.Percentage_vacant ?? props.percentage_vacant;
+  const value = Number(raw);
+  return Number.isFinite(value);
+}
+
+function getActiveVacancy(
+  props: BuildingProperties | undefined,
+  overrideMap: Record<string, number | undefined>,
+  id: string | undefined,
+  totalArea?: number | null
+): number | null {
+  const raw = props?.Percentage_vacant ?? props?.percentage_vacant;
+  const vacancyFromData = Number(raw);
+  if (Number.isFinite(vacancyFromData)) {
+    return clamp(vacancyFromData, 0, 1);
+  }
+
+  if (id && Object.prototype.hasOwnProperty.call(overrideMap, id)) {
+    const overrideArea = overrideMap[id];
+    if (overrideArea === undefined) return null;
+    if (!totalArea || !Number.isFinite(totalArea) || totalArea <= 0) return null;
+    if (overrideArea <= 0) return 0;
+
+    const derived = overrideArea / totalArea;
+    return clamp(derived, 0, 1);
+  }
+
+  return null;
+}
+
 type BuildingFeature = Feature<Geometry, BuildingProperties & { vacancyHeight?: number; baseOffset?: number }>;
 
 export default function MapView() {
   const [collection, setCollection] = useState<FeatureCollection<Geometry, BuildingProperties>>();
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const [selectedFeature, setSelectedFeature] = useState<BuildingFeature | null>(null);
+  const [availableAreaById, setAvailableAreaById] = useState<Record<string, number | undefined>>({});
+  const [imageById, setImageById] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
     fetch('/data/SF_Final.geojson')
@@ -165,15 +262,23 @@ export default function MapView() {
       .map((feature) => {
         const props = feature.properties || {};
         const height = Number(props.height);
-        const rawVacancy = Number(props.Percentage_vacant);
-        const vacancyShare = Number.isFinite(rawVacancy) ? Math.min(Math.max(rawVacancy, 0), 1) : 0;
-
-        if (!Number.isFinite(height) || height <= 0 || vacancyShare <= 0) {
+        if (!Number.isFinite(height) || height <= 0) {
           return null;
         }
 
-        const vacancyHeight = height * vacancyShare;
-        const idSeed = hashStringToSeed(String(props.id ?? '')); 
+        const footprintArea = getFootprintAreaM2(feature);
+        const stories = getStories(props);
+        const floors = stories ?? getFloors(height);
+        const totalArea = getTotalAreaM2(footprintArea, floors);
+        const vacancyShare = getActiveVacancy(props, availableAreaById, props.id, totalArea);
+
+        if (!Number.isFinite(vacancyShare) || vacancyShare <= 0) {
+          return null;
+        }
+
+        const clampedVacancy = clamp(vacancyShare, 0, 1);
+        const vacancyHeight = height * clampedVacancy;
+        const idSeed = hashStringToSeed(String(props.id ?? ''));
         const offsetRange = Math.max(height - vacancyHeight, 0);
         const baseOffset = offsetRange > 0 ? seededRandom(idSeed) * offsetRange : 0;
 
@@ -188,7 +293,7 @@ export default function MapView() {
         } as BuildingFeature;
       })
       .filter(Boolean) as BuildingFeature[];
-  }, [collection]);
+  }, [collection, availableAreaById]);
 
   const onFeatureClick = useCallback((info: { object: BuildingFeature | null }) => {
     if (info.object) {
@@ -244,8 +349,83 @@ export default function MapView() {
   const buildingName = getBuildingName(selectedProps);
   const buildingUse = getBuildingUse(selectedProps);
   const address = formatAddress(selectedProps);
-  const vacancy = formatVacancy(selectedProps);
+  const stories = getStories(selectedProps);
+  const footprintArea = getFootprintAreaM2(selectedFeature ?? undefined);
+  const floors = stories ?? getFloors(selectedProps?.height);
+  const totalArea = getTotalAreaM2(footprintArea, floors);
+  const activeVacancy = selectedProps ? getActiveVacancy(selectedProps, availableAreaById, selectedProps?.id, totalArea) : null;
+  const vacancy = formatVacancyValue(activeVacancy);
   const height = formatHeight(selectedProps);
+  const formattedFootprint = formatArea(footprintArea);
+  const formattedTotalArea = formatArea(totalArea);
+  const selectedAvailableArea = selectedProps?.id ? availableAreaById[selectedProps.id] : undefined;
+  const showOverrideInput = selectedProps ? !hasVacancyData(selectedProps) && totalArea !== null : false;
+  const imageUrl = selectedProps?.id ? imageById[selectedProps.id] : null;
+
+  const onAvailableAreaChange = useCallback(
+    (id: string, value: string) => {
+      setAvailableAreaById((prev) => {
+        const next = { ...prev };
+        if (!value.trim()) {
+          delete next[id];
+          return next;
+        }
+
+        const parsed = Number(value);
+        if (Number.isNaN(parsed)) {
+          delete next[id];
+          return next;
+        }
+
+        next[id] = parsed;
+        return next;
+      });
+    },
+    []
+  );
+
+  useEffect(() => {
+    const id = selectedProps?.id;
+    if (!id) return;
+
+    if (Object.prototype.hasOwnProperty.call(imageById, id)) return;
+
+    const searchBase = getBuildingName(selectedProps) || formatAddress(selectedProps);
+    const query = searchBase ? `${searchBase} San Francisco` : null;
+
+    if (!query) {
+      setImageById((prev) => ({ ...prev, [id]: null }));
+      return;
+    }
+
+    const fetchImage = async () => {
+      try {
+        const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*&srsearch=${encodeURIComponent(
+          query
+        )}`;
+        const searchResponse = await fetch(searchUrl);
+        const searchJson = await searchResponse.json();
+        const title: string | undefined = searchJson?.query?.search?.[0]?.title;
+
+        if (!title) {
+          setImageById((prev) => ({ ...prev, [id]: null }));
+          return;
+        }
+
+        const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+        const summaryResponse = await fetch(summaryUrl);
+        const summaryJson = await summaryResponse.json();
+        const source: string | null = summaryJson?.thumbnail?.source || summaryJson?.originalimage?.source || null;
+
+        setImageById((prev) => ({ ...prev, [id]: source }));
+      } catch (err) {
+        console.error('Failed to load building image', err);
+        setImageById((prev) => ({ ...prev, [id]: null }));
+      }
+    };
+
+    fetchImage();
+  }, [selectedProps, imageById]);
 
   return (
     <div className="layout">
@@ -267,6 +447,11 @@ export default function MapView() {
         </div>
       </div>
       <aside className="sidebar">
+        {imageUrl && (
+          <div className="image-preview">
+            <img src={imageUrl} alt={buildingName || address || 'Building preview'} />
+          </div>
+        )}
         <h2>Building details</h2>
         {selectedFeature ? (
           <dl>
@@ -286,6 +471,38 @@ export default function MapView() {
               <>
                 <dt>Address</dt>
                 <dd>{address}</dd>
+              </>
+            )}
+            {stories && (
+              <>
+                <dt>Stories</dt>
+                <dd>{stories}</dd>
+              </>
+            )}
+            {formattedFootprint && (
+              <>
+                <dt>Footprint area</dt>
+                <dd>{formattedFootprint}</dd>
+              </>
+            )}
+            {formattedTotalArea && (
+              <>
+                <dt>Total building area</dt>
+                <dd>{formattedTotalArea}</dd>
+              </>
+            )}
+            {showOverrideInput && selectedProps?.id && (
+              <>
+                <dt>Available area for rent (m²)</dt>
+                <dd>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={selectedAvailableArea ?? ''}
+                    onChange={(e) => onAvailableAreaChange(selectedProps.id as string, e.target.value)}
+                  />
+                </dd>
               </>
             )}
             {vacancy && (
