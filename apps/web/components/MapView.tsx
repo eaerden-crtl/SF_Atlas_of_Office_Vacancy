@@ -365,7 +365,7 @@ export default function MapView() {
   const hasStoredVacancy = selectedProps ? hasVacancyData(selectedProps) : false;
   const hasSubmittedVacancy =
     selectedProps?.id && Object.prototype.hasOwnProperty.call(submittedAvailableAreaById, selectedProps.id);
-  const isReportOpen = selectedProps?.id ? reportOpenById[selectedProps.id] || hasSubmittedVacancy : false;
+  const isReportOpen = selectedProps?.id ? reportOpenById[selectedProps.id] : false;
   const showOverrideInput = selectedProps ? !hasStoredVacancy && totalArea !== null : false;
   const showVacancyValue = hasStoredVacancy || (hasSubmittedVacancy && (activeVacancy ?? 0) > 0);
 
@@ -376,16 +376,20 @@ export default function MapView() {
     []
   );
 
-  const onSubmitAvailableArea = useCallback((id: string) => {
-    setSubmittedAvailableAreaById((prev) => {
-      const draft = draftAvailableAreaById[id];
-      if (!draft?.trim()) return prev;
-      const parsed = Number(draft);
-      if (!Number.isFinite(parsed)) return prev;
-      const clamped = Math.max(parsed, 0);
-      return { ...prev, [id]: clamped };
-    });
-  }, [draftAvailableAreaById]);
+  const onSubmitAvailableArea = useCallback(
+    (id: string) => {
+      setSubmittedAvailableAreaById((prev) => {
+        const draft = draftAvailableAreaById[id];
+        if (!draft?.trim()) return prev;
+        const parsed = Number(draft);
+        if (!Number.isFinite(parsed)) return prev;
+        const clamped = Math.max(parsed, 0);
+        return { ...prev, [id]: clamped };
+      });
+      setReportOpenById((prev) => ({ ...prev, [id]: false }));
+    },
+    [draftAvailableAreaById]
+  );
 
   const onClearReport = useCallback((id: string) => {
     setSubmittedAvailableAreaById((prev) => {
