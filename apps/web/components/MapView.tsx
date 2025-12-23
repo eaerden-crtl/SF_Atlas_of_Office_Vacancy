@@ -235,7 +235,6 @@ export default function MapView() {
   const [draftAvailableAreaById, setDraftAvailableAreaById] = useState<Record<string, string>>({});
   const [submittedAvailableAreaById, setSubmittedAvailableAreaById] = useState<Record<string, number | undefined>>({});
   const [reportOpenById, setReportOpenById] = useState<Record<string, boolean>>({});
-  const [imageById, setImageById] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
     fetch('/data/SF_Final.geojson')
@@ -369,7 +368,6 @@ export default function MapView() {
   const isReportOpen = selectedProps?.id ? reportOpenById[selectedProps.id] || hasSubmittedVacancy : false;
   const showOverrideInput = selectedProps ? !hasStoredVacancy && totalArea !== null : false;
   const showVacancyValue = hasStoredVacancy || (hasSubmittedVacancy && (activeVacancy ?? 0) > 0);
-  const imageUrl = selectedProps?.id ? imageById[selectedProps.id] : null;
 
   const onDraftAvailableAreaChange = useCallback(
     (id: string, value: string) => {
@@ -400,49 +398,6 @@ export default function MapView() {
     setReportOpenById((prev) => ({ ...prev, [id]: false }));
   }, []);
 
-  useEffect(() => {
-    const id = selectedProps?.id;
-    if (!id) return;
-
-    if (Object.prototype.hasOwnProperty.call(imageById, id)) return;
-
-    const searchBase = getBuildingName(selectedProps) || formatAddress(selectedProps);
-    const query = searchBase ? `${searchBase} San Francisco` : null;
-
-    if (!query) {
-      setImageById((prev) => ({ ...prev, [id]: null }));
-      return;
-    }
-
-    const fetchImage = async () => {
-      try {
-        const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*&srsearch=${encodeURIComponent(
-          query
-        )}`;
-        const searchResponse = await fetch(searchUrl);
-        const searchJson = await searchResponse.json();
-        const title: string | undefined = searchJson?.query?.search?.[0]?.title;
-
-        if (!title) {
-          setImageById((prev) => ({ ...prev, [id]: null }));
-          return;
-        }
-
-        const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
-        const summaryResponse = await fetch(summaryUrl);
-        const summaryJson = await summaryResponse.json();
-        const source: string | null = summaryJson?.thumbnail?.source || summaryJson?.originalimage?.source || null;
-
-        setImageById((prev) => ({ ...prev, [id]: source }));
-      } catch (err) {
-        console.error('Failed to load building image', err);
-        setImageById((prev) => ({ ...prev, [id]: null }));
-      }
-    };
-
-    fetchImage();
-  }, [selectedProps, imageById]);
-
   return (
     <div className="layout">
       <div className="map-container">
@@ -463,11 +418,6 @@ export default function MapView() {
         </div>
       </div>
       <aside className="sidebar">
-        {imageUrl && (
-          <div className="image-preview">
-            <img src={imageUrl} alt={buildingName || address || 'Building preview'} />
-          </div>
-        )}
         <h2>Building details</h2>
         {selectedFeature ? (
           <dl>
