@@ -203,7 +203,7 @@ function hasVacancyData(props?: BuildingProperties): boolean {
 
 function getActiveVacancy(
   props: BuildingProperties | undefined,
-  overrideMap: Record<string, number | undefined>,
+  submittedMap: Record<string, number | undefined>,
   id: string | undefined,
   totalArea?: number | null
 ): number | null {
@@ -213,13 +213,13 @@ function getActiveVacancy(
     return clamp(vacancyFromData, 0, 1);
   }
 
-  if (id && Object.prototype.hasOwnProperty.call(overrideMap, id)) {
-    const overrideArea = overrideMap[id];
-    if (overrideArea === undefined) return null;
+  if (id && Object.prototype.hasOwnProperty.call(submittedMap, id)) {
+    const submittedArea = submittedMap[id];
+    if (submittedArea === undefined) return null;
     if (!totalArea || !Number.isFinite(totalArea) || totalArea <= 0) return null;
-    if (overrideArea <= 0) return 0;
+    if (submittedArea <= 0) return 0;
 
-    const derived = overrideArea / totalArea;
+    const derived = submittedArea / totalArea;
     return clamp(derived, 0, 1);
   }
 
@@ -232,7 +232,9 @@ export default function MapView() {
   const [collection, setCollection] = useState<FeatureCollection<Geometry, BuildingProperties>>();
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const [selectedFeature, setSelectedFeature] = useState<BuildingFeature | null>(null);
-  const [availableAreaById, setAvailableAreaById] = useState<Record<string, number | undefined>>({});
+  const [draftAvailableAreaById, setDraftAvailableAreaById] = useState<Record<string, string>>({});
+  const [submittedAvailableAreaById, setSubmittedAvailableAreaById] = useState<Record<string, number | undefined>>({});
+  const [reportOpenById, setReportOpenById] = useState<Record<string, boolean>>({});
   const [imageById, setImageById] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
@@ -270,7 +272,7 @@ export default function MapView() {
         const stories = getStories(props);
         const floors = stories ?? getFloors(height);
         const totalArea = getTotalAreaM2(footprintArea, floors);
-        const vacancyShare = getActiveVacancy(props, availableAreaById, props.id, totalArea);
+        const vacancyShare = getActiveVacancy(props, submittedAvailableAreaById, props.id, totalArea);
 
         if (!Number.isFinite(vacancyShare) || vacancyShare <= 0) {
           return null;
@@ -293,7 +295,7 @@ export default function MapView() {
         } as BuildingFeature;
       })
       .filter(Boolean) as BuildingFeature[];
-  }, [collection, availableAreaById]);
+  }, [collection, submittedAvailableAreaById]);
 
   const onFeatureClick = useCallback((info: { object: BuildingFeature | null }) => {
     if (info.object) {
@@ -353,36 +355,50 @@ export default function MapView() {
   const footprintArea = getFootprintAreaM2(selectedFeature ?? undefined);
   const floors = stories ?? getFloors(selectedProps?.height);
   const totalArea = getTotalAreaM2(footprintArea, floors);
-  const activeVacancy = selectedProps ? getActiveVacancy(selectedProps, availableAreaById, selectedProps?.id, totalArea) : null;
+  const activeVacancy = selectedProps
+    ? getActiveVacancy(selectedProps, submittedAvailableAreaById, selectedProps?.id, totalArea)
+    : null;
   const vacancy = formatVacancyValue(activeVacancy);
   const height = formatHeight(selectedProps);
   const formattedFootprint = formatArea(footprintArea);
   const formattedTotalArea = formatArea(totalArea);
-  const selectedAvailableArea = selectedProps?.id ? availableAreaById[selectedProps.id] : undefined;
-  const showOverrideInput = selectedProps ? !hasVacancyData(selectedProps) && totalArea !== null : false;
+  const selectedDraftAvailableArea = selectedProps?.id ? draftAvailableAreaById[selectedProps.id] : '';
+  const hasStoredVacancy = selectedProps ? hasVacancyData(selectedProps) : false;
+  const hasSubmittedVacancy =
+    selectedProps?.id && Object.prototype.hasOwnProperty.call(submittedAvailableAreaById, selectedProps.id);
+  const isReportOpen = selectedProps?.id ? reportOpenById[selectedProps.id] || hasSubmittedVacancy : false;
+  const showOverrideInput = selectedProps ? !hasStoredVacancy && totalArea !== null : false;
+  const showVacancyValue = hasStoredVacancy || (hasSubmittedVacancy && (activeVacancy ?? 0) > 0);
   const imageUrl = selectedProps?.id ? imageById[selectedProps.id] : null;
 
-  const onAvailableAreaChange = useCallback(
+  const onDraftAvailableAreaChange = useCallback(
     (id: string, value: string) => {
-      setAvailableAreaById((prev) => {
-        const next = { ...prev };
-        if (!value.trim()) {
-          delete next[id];
-          return next;
-        }
-
-        const parsed = Number(value);
-        if (Number.isNaN(parsed)) {
-          delete next[id];
-          return next;
-        }
-
-        next[id] = parsed;
-        return next;
-      });
+      setDraftAvailableAreaById((prev) => ({ ...prev, [id]: value }));
     },
     []
   );
+
+  const onSubmitAvailableArea = useCallback((id: string) => {
+    setSubmittedAvailableAreaById((prev) => {
+      const draft = draftAvailableAreaById[id];
+      if (!draft?.trim()) return prev;
+      const parsed = Number(draft);
+      if (!Number.isFinite(parsed)) return prev;
+      const clamped = Math.max(parsed, 0);
+      return { ...prev, [id]: clamped };
+    });
+  }, [draftAvailableAreaById]);
+
+  const onClearReport = useCallback((id: string) => {
+    setSubmittedAvailableAreaById((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, id)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setDraftAvailableAreaById((prev) => ({ ...prev, [id]: '' }));
+    setReportOpenById((prev) => ({ ...prev, [id]: false }));
+  }, []);
 
   useEffect(() => {
     const id = selectedProps?.id;
@@ -493,19 +509,41 @@ export default function MapView() {
             )}
             {showOverrideInput && selectedProps?.id && (
               <>
-                <dt>Available area for rent (m²)</dt>
+                <dt>Vacancy report</dt>
                 <dd>
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={selectedAvailableArea ?? ''}
-                    onChange={(e) => onAvailableAreaChange(selectedProps.id as string, e.target.value)}
-                  />
+                  {!isReportOpen ? (
+                    <button
+                      type="button"
+                      onClick={() => setReportOpenById((prev) => ({ ...prev, [selectedProps.id]: true }))}
+                    >
+                      Report vacancy
+                    </button>
+                  ) : (
+                    <div className="vacancy-report">
+                      <label>
+                        <span>Available area for rent (m²)</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={selectedDraftAvailableArea}
+                          onChange={(e) => onDraftAvailableAreaChange(selectedProps.id as string, e.target.value)}
+                        />
+                      </label>
+                      <button type="button" onClick={() => onSubmitAvailableArea(selectedProps.id as string)}>
+                        Submit
+                      </button>
+                      {hasSubmittedVacancy && (
+                        <button type="button" className="link-button" onClick={() => onClearReport(selectedProps.id as string)}>
+                          Clear report
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </dd>
               </>
             )}
-            {vacancy && (
+            {showVacancyValue && vacancy && (
               <>
                 <dt>Percentage vacant</dt>
                 <dd>{vacancy}</dd>
