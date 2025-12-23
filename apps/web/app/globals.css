@@ -52,6 +52,36 @@ a {
   margin: 4px 0 8px;
 }
 
+.vacancy-report {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vacancy-report label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: #4b5563;
+}
+
+.vacancy-report input {
+  max-width: 100%;
+  padding: 4px 6px;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #2563eb;
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-align: left;
+}
+
 .legend {
   position: absolute;
   bottom: 16px;
