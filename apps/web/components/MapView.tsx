@@ -203,7 +203,7 @@ function hasVacancyData(props?: BuildingProperties): boolean {
 
 function getActiveVacancy(
   props: BuildingProperties | undefined,
-  overrideMap: Record<string, number | undefined>,
+  submittedMap: Record<string, number | undefined>,
   id: string | undefined,
   totalArea?: number | null
 ): number | null {
@@ -213,8 +213,8 @@ function getActiveVacancy(
     return clamp(vacancyFromData, 0, 1);
   }
 
-  if (id && Object.prototype.hasOwnProperty.call(overrideMap, id)) {
-    const overrideArea = overrideMap[id];
+  if (id && Object.prototype.hasOwnProperty.call(submittedMap, id)) {
+    const overrideArea = submittedMap[id];
     if (overrideArea === undefined) return null;
     if (!totalArea || !Number.isFinite(totalArea) || totalArea <= 0) return null;
     if (overrideArea <= 0) return 0;
@@ -232,7 +232,9 @@ export default function MapView() {
   const [collection, setCollection] = useState<FeatureCollection<Geometry, BuildingProperties>>();
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const [selectedFeature, setSelectedFeature] = useState<BuildingFeature | null>(null);
-  const [availableAreaById, setAvailableAreaById] = useState<Record<string, number | undefined>>({});
+  const [draftAvailableAreaById, setDraftAvailableAreaById] = useState<Record<string, string>>({});
+  const [submittedAvailableAreaById, setSubmittedAvailableAreaById] = useState<Record<string, number | undefined>>({});
+  const [showVacancyFormById, setShowVacancyFormById] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     fetch('/data/SF_Final.geojson')
@@ -269,7 +271,7 @@ export default function MapView() {
         const stories = getStories(props);
         const floors = stories ?? getFloors(height);
         const totalArea = getTotalAreaM2(footprintArea, floors);
-        const vacancyShare = getActiveVacancy(props, availableAreaById, props.id, totalArea);
+        const vacancyShare = getActiveVacancy(props, submittedAvailableAreaById, props.id, totalArea);
 
         if (!Number.isFinite(vacancyShare) || vacancyShare <= 0) {
           return null;
@@ -292,7 +294,7 @@ export default function MapView() {
         } as BuildingFeature;
       })
       .filter(Boolean) as BuildingFeature[];
-  }, [collection, availableAreaById]);
+  }, [collection, submittedAvailableAreaById]);
 
   const onFeatureClick = useCallback((info: { object: BuildingFeature | null }) => {
     if (info.object) {
@@ -352,35 +354,49 @@ export default function MapView() {
   const footprintArea = getFootprintAreaM2(selectedFeature ?? undefined);
   const floors = stories ?? getFloors(selectedProps?.height);
   const totalArea = getTotalAreaM2(footprintArea, floors);
-  const activeVacancy = selectedProps ? getActiveVacancy(selectedProps, availableAreaById, selectedProps?.id, totalArea) : null;
+  const activeVacancy = selectedProps
+    ? getActiveVacancy(selectedProps, submittedAvailableAreaById, selectedProps?.id, totalArea)
+    : null;
   const vacancy = formatVacancyValue(activeVacancy);
   const height = formatHeight(selectedProps);
   const formattedFootprint = formatArea(footprintArea);
   const formattedTotalArea = formatArea(totalArea);
-  const selectedAvailableArea = selectedProps?.id ? availableAreaById[selectedProps.id] : undefined;
+  const selectedAvailableAreaDraft = selectedProps?.id ? draftAvailableAreaById[selectedProps.id] ?? '' : '';
   const showOverrideInput = selectedProps ? !hasVacancyData(selectedProps) && totalArea !== null : false;
-
-  const onAvailableAreaChange = useCallback(
-    (id: string, value: string) => {
-      setAvailableAreaById((prev) => {
-        const next = { ...prev };
-        if (!value.trim()) {
-          delete next[id];
-          return next;
-        }
-
-        const parsed = Number(value);
-        if (Number.isNaN(parsed)) {
-          delete next[id];
-          return next;
-        }
-
-        next[id] = parsed;
-        return next;
-      });
-    },
-    []
+  const hasSubmittedVacancy = Boolean(
+    selectedProps?.id && Object.prototype.hasOwnProperty.call(submittedAvailableAreaById, selectedProps.id)
   );
+  const showVacancyForm = selectedProps?.id ? showVacancyFormById[selectedProps.id] : false;
+
+  const onAvailableAreaChange = useCallback((id: string, value: string) => {
+    setDraftAvailableAreaById((prev) => ({ ...prev, [id]: value }));
+  }, []);
+
+  const onSubmitAvailableArea = useCallback(
+    (id: string) => {
+      const raw = draftAvailableAreaById[id];
+      const parsed = Number(raw);
+      if (!raw?.trim() || Number.isNaN(parsed) || parsed < 0) return;
+
+      setSubmittedAvailableAreaById((prev) => ({ ...prev, [id]: parsed }));
+      setShowVacancyFormById((prev) => ({ ...prev, [id]: false }));
+    },
+    [draftAvailableAreaById]
+  );
+
+  const onClearAvailableArea = useCallback((id: string) => {
+    setSubmittedAvailableAreaById((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setDraftAvailableAreaById((prev) => ({ ...prev, [id]: '' }));
+    setShowVacancyFormById((prev) => ({ ...prev, [id]: false }));
+  }, []);
+
+  const onReportVacancy = useCallback((id: string) => {
+    setShowVacancyFormById((prev) => ({ ...prev, [id]: true }));
+  }, []);
 
   return (
     <div className="layout">
@@ -443,16 +459,37 @@ export default function MapView() {
             )}
             {showOverrideInput && selectedProps?.id && (
               <>
-                <dt>Available area for rent (m²)</dt>
-                <dd>
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={selectedAvailableArea ?? ''}
-                    onChange={(e) => onAvailableAreaChange(selectedProps.id as string, e.target.value)}
-                  />
-                </dd>
+                {!showVacancyForm && (
+                  <dd>
+                    <button type="button" onClick={() => onReportVacancy(selectedProps.id as string)}>
+                      Report vacancy
+                    </button>
+                  </dd>
+                )}
+                {showVacancyForm && (
+                  <>
+                    <dt>Available area for rent (m²)</dt>
+                    <dd>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={selectedAvailableAreaDraft}
+                        onChange={(e) => onAvailableAreaChange(selectedProps.id as string, e.target.value)}
+                      />
+                      <button type="button" onClick={() => onSubmitAvailableArea(selectedProps.id as string)}>
+                        Submit
+                      </button>
+                    </dd>
+                  </>
+                )}
+                {hasSubmittedVacancy && (
+                  <dd>
+                    <button type="button" onClick={() => onClearAvailableArea(selectedProps.id as string)}>
+                      Clear report
+                    </button>
+                  </dd>
+                )}
               </>
             )}
             {vacancy && (
