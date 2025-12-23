@@ -5,6 +5,12 @@
   color: #111827;
 }
 
+@font-face {
+  font-family: 'Window Yi Baity';
+  src: local('Window Yi Baity'), local('Yi Baiti');
+  font-display: swap;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -29,6 +35,8 @@ a {
   border-left: 1px solid #e5e7eb;
   padding: 16px;
   overflow-y: auto;
+  font-family: 'Window Yi Baity', 'Yi Baiti', sans-serif;
+  color: #ff2fa4;
 }
 
 .sidebar h2 {
@@ -36,6 +44,7 @@ a {
   margin-bottom: 12px;
   font-size: 1.1rem;
   font-weight: 600;
+  color: inherit;
 }
 
 .sidebar dl {
@@ -50,6 +59,49 @@ a {
 
 .sidebar dd {
   margin: 4px 0 8px;
+}
+
+.sidebar dt,
+.sidebar dd,
+.sidebar label,
+.sidebar button,
+.sidebar input {
+  font-family: inherit;
+  color: inherit;
+}
+
+.sidebar input {
+  background-color: #fff;
+}
+
+.vacancy-report {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vacancy-report label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: inherit;
+}
+
+.vacancy-report input {
+  max-width: 100%;
+  padding: 4px 6px;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-align: left;
 }
 
 .legend {
