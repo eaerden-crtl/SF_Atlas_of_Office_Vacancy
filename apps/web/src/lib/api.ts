@@ -48,3 +48,25 @@ export async function fetchBuildingByAddress(query: string): Promise<BuildingDet
 export async function fetchBuildingById(id: string): Promise<BuildingDetailResponse | null> {
   return fetchJson<BuildingDetailResponse>(`/building?id=${encodeURIComponent(id)}`);
 }
+
+export async function fetchBuildingByIdWithMeta(id: string): Promise<{
+  data: BuildingDetailResponse | null;
+  status: number | null;
+  url: string;
+}> {
+  const path = `/building?id=${encodeURIComponent(id)}`;
+  const url = `${API_BASE_URL}${path}`;
+
+  try {
+    const response = await fetch(url);
+    const status = response.status;
+    if (!response.ok) {
+      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+    }
+    const data = (await response.json()) as BuildingDetailResponse;
+    return { data, status, url };
+  } catch (error) {
+    console.warn('API request failed', error);
+    return { data: null, status: null, url };
+  }
+}

@@ -8,7 +8,7 @@ import maplibregl from 'maplibre-gl';
 import type { Feature, FeatureCollection, Geometry, Position } from 'geojson';
 import area from '@turf/area';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { fetchBuildingById, searchBuildings } from '../src/lib/api';
+import { fetchBuildingByIdWithMeta } from '../src/lib/api';
 
 interface BuildingProperties {
   id?: string;
@@ -283,72 +283,23 @@ export default function MapView() {
     let isMounted = true;
 
     const loadInitialBuildings = async () => {
-      const results = await searchBuildings('a');
-      if (!results.length) return;
-
-      const detailResponses = await Promise.all(
-        results
-          .map((result) => result.id)
-          .filter((id): id is string => Boolean(id))
-          .map((id) => fetchBuildingById(id))
-      );
-
-      const features = detailResponses
-        .filter((response): response is NonNullable<typeof response> => Boolean(response))
-        .filter((response) => response.found && response.geometry)
-        .map((response) => ({
-          type: 'Feature',
-          geometry: convertGeometry(response.geometry as Geometry),
-          properties: {
-            ...(response.properties ?? {}),
-            id: response.id ?? response.properties?.id
-          }
-        })) as Feature<Geometry, BuildingProperties>[];
-
-      if (!isMounted || !features.length) return;
-      setCollection({ type: 'FeatureCollection', features });
+      const response = await fetch('/data/SF_Final.geojson');
+      if (!response.ok) {
+        throw new Error(`Failed to load GeoJSON: ${response.status} ${response.statusText}`);
+      }
+      const json = (await response.json()) as FeatureCollection<Geometry, BuildingProperties>;
+      if (!isMounted) return;
+      setCollection(json);
     };
 
     loadInitialBuildings().catch((error) => {
-      console.warn('Failed to load initial buildings', error);
+      console.warn('Failed to load GeoJSON', error);
     });
 
     return () => {
       isMounted = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (!selectedId) return;
-
-    let isActive = true;
-
-    const loadSelectedBuilding = async () => {
-      const response = await fetchBuildingById(selectedId);
-      if (!response || !response.found || !response.geometry) return;
-
-      const feature: BuildingFeature = {
-        type: 'Feature',
-        geometry: convertGeometry(response.geometry as Geometry),
-        properties: {
-          ...(response.properties ?? {}),
-          id: response.id ?? response.properties?.id
-        }
-      };
-
-      if (isActive) {
-        setSelectedFeature(feature);
-      }
-    };
-
-    loadSelectedBuilding().catch((error) => {
-      console.warn('Failed to load building details', error);
-    });
-
-    return () => {
-      isActive = false;
-    };
-  }, [selectedId]);
 
   const vacancyFeatures = useMemo(() => {
     if (!collection) return [];
@@ -391,11 +342,34 @@ export default function MapView() {
   }, [collection, submittedAvailableAreaById]);
 
   const onFeatureClick = useCallback((info: { object: BuildingFeature | null }) => {
-    if (info.object) {
-      const id = info.object.properties?.id;
-      setSelectedId(id);
-      setSelectedFeature(info.object);
-    }
+    if (!info.object) return;
+
+    const id = info.object.properties?.id;
+    setSelectedId(id);
+    setSelectedFeature(info.object);
+
+    if (!id) return;
+
+    fetchBuildingByIdWithMeta(id)
+      .then(({ data, status, url }) => {
+        console.log('Building API request', url, status);
+
+        if (!data || !data.found || !data.geometry) return;
+
+        const feature: BuildingFeature = {
+          type: 'Feature',
+          geometry: convertGeometry(data.geometry as Geometry),
+          properties: {
+            ...(data.properties ?? {}),
+            id: data.id ?? data.properties?.id
+          }
+        };
+
+        setSelectedFeature(feature);
+      })
+      .catch((error) => {
+        console.warn('Failed to load building details', error);
+      });
   }, []);
 
   const baseLayer = useMemo(() => {
