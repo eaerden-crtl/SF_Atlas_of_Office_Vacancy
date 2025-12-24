@@ -126,6 +126,64 @@ a {
   vertical-align: middle;
 }
 
+.search-panel {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 10;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: 'Window Yi Baity', 'Yi Baiti', sans-serif;
+  color: #ff2fa4;
+}
+
+.search-panel input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  font-family: inherit;
+  color: inherit;
+}
+
+.search-label {
+  font-size: 0.85rem;
+  color: #4b5563;
+}
+
+.search-results {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.12);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.search-result {
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  color: inherit;
+}
+
+.search-result:hover {
+  background: rgba(255, 47, 164, 0.08);
+}
+
+.search-status {
+  padding: 10px;
+  font-size: 0.85rem;
+  color: #6b7280;
+}
+
 .map-container {
   position: relative;
   width: 100%;
