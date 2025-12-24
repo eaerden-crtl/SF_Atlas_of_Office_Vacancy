@@ -8,6 +8,7 @@ import maplibregl from 'maplibre-gl';
 import type { Feature, FeatureCollection, Geometry, Position } from 'geojson';
 import area from '@turf/area';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { fetchBuildingByIdWithMeta } from '../src/lib/api';
 
 interface BuildingProperties {
   id?: string;
@@ -45,6 +46,13 @@ const BASE_COLOR = [190, 220, 235, 180] as const;
 const BASE_HIGHLIGHT = [160, 200, 230, 240] as const;
 const VACANCY_COLOR = [35, 60, 120, 220] as const;
 const VACANCY_HIGHLIGHT = [55, 90, 160, 240] as const;
+
+const NORMALIZED_BOUNDS = {
+  minLng: -122.4319774,
+  maxLng: -122.3804987,
+  minLat: 37.770873,
+  maxLat: 37.8114532
+};
 
 function toCssRgba(color: readonly number[]): string {
   const [r, g, b, a] = color;
@@ -92,6 +100,41 @@ function addBaseToGeometry(geometry: Geometry, base: number): Geometry {
 
 function addBaseToRing(ring: Position[], base: number): Position[] {
   return ring.map(([lng, lat]) => [lng, lat, base]);
+}
+
+function isNormalizedCoordinate(position: Position): boolean {
+  const [lng, lat] = position;
+  return Math.abs(lng) <= 1.5 && Math.abs(lat) <= 1.5;
+}
+
+function normalizePosition(position: Position): Position {
+  const [lng, lat, elevation] = position;
+  if (!isNormalizedCoordinate(position)) return position;
+
+  const mappedLng = NORMALIZED_BOUNDS.minLng + (NORMALIZED_BOUNDS.maxLng - NORMALIZED_BOUNDS.minLng) * lng;
+  const mappedLat = NORMALIZED_BOUNDS.minLat + (NORMALIZED_BOUNDS.maxLat - NORMALIZED_BOUNDS.minLat) * lat;
+
+  return elevation !== undefined ? [mappedLng, mappedLat, elevation] : [mappedLng, mappedLat];
+}
+
+function convertGeometry(geometry: Geometry): Geometry {
+  const convertRing = (ring: Position[]): Position[] => ring.map((position) => normalizePosition(position));
+
+  if (geometry.type === 'Polygon') {
+    return {
+      ...geometry,
+      coordinates: geometry.coordinates.map((ring) => convertRing(ring))
+    };
+  }
+
+  if (geometry.type === 'MultiPolygon') {
+    return {
+      ...geometry,
+      coordinates: geometry.coordinates.map((poly) => poly.map((ring) => convertRing(ring)))
+    };
+  }
+
+  return geometry;
 }
 
 function getBuildingName(props?: BuildingProperties): string | null {
@@ -237,24 +280,26 @@ export default function MapView() {
   const [reportOpenById, setReportOpenById] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    fetch('/data/SF_Final.geojson')
-      .then((res) => res.json())
-      .then((json) => setCollection(json as FeatureCollection<Geometry, BuildingProperties>))
-      .catch((error) => {
-        console.error('Failed to load GeoJSON', error);
-      });
-  }, []);
+    let isMounted = true;
 
-  useEffect(() => {
-    if (!collection) return;
-
-    if (selectedId) {
-      const match = collection.features.find((f) => f.properties?.id === selectedId);
-      if (match) {
-        setSelectedFeature(match as BuildingFeature);
+    const loadInitialBuildings = async () => {
+      const response = await fetch('/data/SF_Final.geojson');
+      if (!response.ok) {
+        throw new Error(`Failed to load GeoJSON: ${response.status} ${response.statusText}`);
       }
-    }
-  }, [collection, selectedId]);
+      const json = (await response.json()) as FeatureCollection<Geometry, BuildingProperties>;
+      if (!isMounted) return;
+      setCollection(json);
+    };
+
+    loadInitialBuildings().catch((error) => {
+      console.warn('Failed to load GeoJSON', error);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const vacancyFeatures = useMemo(() => {
     if (!collection) return [];
@@ -297,11 +342,34 @@ export default function MapView() {
   }, [collection, submittedAvailableAreaById]);
 
   const onFeatureClick = useCallback((info: { object: BuildingFeature | null }) => {
-    if (info.object) {
-      const id = info.object.properties?.id;
-      setSelectedId(id);
-      setSelectedFeature(info.object);
-    }
+    if (!info.object) return;
+
+    const id = info.object.properties?.id;
+    setSelectedId(id);
+    setSelectedFeature(info.object);
+
+    if (!id) return;
+
+    fetchBuildingByIdWithMeta(id)
+      .then(({ data, status, url }) => {
+        console.log('Building API request', url, status);
+
+        if (!data || !data.found || !data.geometry) return;
+
+        const feature: BuildingFeature = {
+          type: 'Feature',
+          geometry: convertGeometry(data.geometry as Geometry),
+          properties: {
+            ...(data.properties ?? {}),
+            id: data.id ?? data.properties?.id
+          }
+        };
+
+        setSelectedFeature(feature);
+      })
+      .catch((error) => {
+        console.warn('Failed to load building details', error);
+      });
   }, []);
 
   const baseLayer = useMemo(() => {
