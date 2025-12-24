@@ -1,14 +1,16 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DeckGL from '@deck.gl/react';
 import { GeoJsonLayer } from '@deck.gl/layers';
-import Map from 'react-map-gl/maplibre';
+import Map, { type MapRef } from 'react-map-gl/maplibre';
 import maplibregl from 'maplibre-gl';
 import type { Feature, FeatureCollection, Geometry, Position } from 'geojson';
 import area from '@turf/area';
+import bbox from '@turf/bbox';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { fetchBuildingByIdWithMeta } from '../src/lib/api';
+import { fetchBuildingByIdWithMeta, searchBuildings, type SearchResult } from '../src/lib/api';
+import { useDebouncedValue } from '../src/lib/search';
 
 interface BuildingProperties {
   id?: string;
@@ -275,9 +277,16 @@ export default function MapView() {
   const [collection, setCollection] = useState<FeatureCollection<Geometry, BuildingProperties>>();
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const [selectedFeature, setSelectedFeature] = useState<BuildingFeature | null>(null);
+  const [selectedOverlayFeature, setSelectedOverlayFeature] = useState<BuildingFeature | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [draftAvailableAreaById, setDraftAvailableAreaById] = useState<Record<string, string>>({});
   const [submittedAvailableAreaById, setSubmittedAvailableAreaById] = useState<Record<string, number | undefined>>({});
   const [reportOpenById, setReportOpenById] = useState<Record<string, boolean>>({});
+  const mapRef = useRef<MapRef | null>(null);
+  const debouncedSearchQuery = useDebouncedValue(searchQuery, 300);
 
   useEffect(() => {
     let isMounted = true;
@@ -300,6 +309,89 @@ export default function MapView() {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!debouncedSearchQuery.trim()) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+
+    let isActive = true;
+    setSearchLoading(true);
+
+    searchBuildings(debouncedSearchQuery)
+      .then((results) => {
+        if (!isActive) return;
+        setSearchResults(results.slice(0, 8));
+        setSearchLoading(false);
+      })
+      .catch((error) => {
+        console.warn('Search request failed', error);
+        if (!isActive) return;
+        setSearchResults([]);
+        setSearchLoading(false);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [debouncedSearchQuery]);
+
+  const zoomToGeometry = useCallback((geometry: Geometry) => {
+    if (!mapRef.current) return;
+
+    if (geometry.type === 'Point') {
+      const [lng, lat] = geometry.coordinates as [number, number];
+      mapRef.current.flyTo({ center: [lng, lat], zoom: 16, duration: 800 });
+      return;
+    }
+
+    const bounds = bbox({
+      type: 'Feature',
+      geometry,
+      properties: {}
+    }) as [number, number, number, number];
+    mapRef.current.fitBounds(
+      [
+        [bounds[0], bounds[1]],
+        [bounds[2], bounds[3]]
+      ],
+      { padding: 60, duration: 800 }
+    );
+  }, []);
+
+  const selectBuildingFromApi = useCallback(
+    (id: string, localMatch: BuildingFeature | null) => {
+      fetchBuildingByIdWithMeta(id)
+        .then(({ data, status, url }) => {
+          console.log('Building API request', url, status);
+
+          if (!data || !data.found || !data.geometry) return;
+
+          const feature: BuildingFeature = {
+            type: 'Feature',
+            geometry: convertGeometry(data.geometry as Geometry),
+            properties: {
+              ...(data.properties ?? {}),
+              id: data.id ?? data.properties?.id
+            }
+          };
+
+          setSelectedFeature(feature);
+          if (!localMatch) {
+            setSelectedOverlayFeature(feature);
+          } else {
+            setSelectedOverlayFeature(null);
+          }
+          zoomToGeometry(feature.geometry);
+        })
+        .catch((error) => {
+          console.warn('Failed to load building details', error);
+        });
+    },
+    [zoomToGeometry]
+  );
 
   const vacancyFeatures = useMemo(() => {
     if (!collection) return [];
@@ -347,29 +439,47 @@ export default function MapView() {
     const id = info.object.properties?.id;
     setSelectedId(id);
     setSelectedFeature(info.object);
+    setSelectedOverlayFeature(null);
 
     if (!id) return;
 
-    fetchBuildingByIdWithMeta(id)
-      .then(({ data, status, url }) => {
-        console.log('Building API request', url, status);
+    selectBuildingFromApi(id, info.object);
+  }, [selectBuildingFromApi]);
 
-        if (!data || !data.found || !data.geometry) return;
+  const onSearchSelect = useCallback(
+    (result: SearchResult) => {
+      if (!result) return;
 
-        const feature: BuildingFeature = {
-          type: 'Feature',
-          geometry: convertGeometry(data.geometry as Geometry),
-          properties: {
-            ...(data.properties ?? {}),
-            id: data.id ?? data.properties?.id
-          }
-        };
+      setSearchOpen(false);
+      if (result.address) {
+        setSearchQuery(result.address);
+      }
 
-        setSelectedFeature(feature);
-      })
-      .catch((error) => {
-        console.warn('Failed to load building details', error);
-      });
+      const id = result.id;
+      if (!id) return;
+
+      const localMatch =
+        collection?.features.find((feature) => feature.properties?.id === id) ?? null;
+
+      setSelectedId(id);
+      setSelectedFeature(localMatch as BuildingFeature | null);
+      setSelectedOverlayFeature(null);
+
+      if (localMatch) {
+        zoomToGeometry(localMatch.geometry);
+      }
+
+      selectBuildingFromApi(id, (localMatch as BuildingFeature | null) ?? null);
+    },
+    [collection, selectBuildingFromApi]
+  );
+
+  const formatSearchResult = useCallback((result: SearchResult): string => {
+    if (result.address) return result.address;
+    const parts = [result.number, result.street, result.postcode]
+      .map((part) => (typeof part === 'string' ? part.trim() : ''))
+      .filter(Boolean);
+    return parts.length ? parts.join(' ') : 'Unknown address';
   }, []);
 
   const baseLayer = useMemo(() => {
@@ -412,7 +522,23 @@ export default function MapView() {
     });
   }, [vacancyFeatures, selectedId, onFeatureClick]);
 
-  const layers = useMemo(() => [baseLayer, vacancyLayer].filter(Boolean), [baseLayer, vacancyLayer]);
+  const overlayLayer = useMemo(() => {
+    if (!selectedOverlayFeature) return null;
+
+    return new GeoJsonLayer({
+      id: 'selected-overlay',
+      data: selectedOverlayFeature,
+      pickable: false,
+      extruded: true,
+      wireframe: false,
+      filled: true,
+      getElevation: (f: BuildingFeature) => Number(f.properties?.height) || 0,
+      getFillColor: BASE_HIGHLIGHT,
+      getLineColor: [120, 160, 190]
+    });
+  }, [selectedOverlayFeature]);
+
+  const layers = useMemo(() => [baseLayer, vacancyLayer, overlayLayer].filter(Boolean), [baseLayer, vacancyLayer, overlayLayer]);
 
   const selectedProps = selectedFeature?.properties;
   const buildingName = getBuildingName(selectedProps);
@@ -499,12 +625,50 @@ export default function MapView() {
   return (
     <div className="layout">
       <div className="map-container">
+        <div className="search-panel">
+          <label htmlFor="building-search" className="search-label">
+            Search
+          </label>
+          <input
+            id="building-search"
+            type="text"
+            placeholder="Search address or building name…"
+            value={searchQuery}
+            onChange={(event) => {
+              setSearchQuery(event.target.value);
+              setSearchOpen(true);
+            }}
+            onFocus={() => setSearchOpen(true)}
+            onBlur={() => setSearchOpen(false)}
+          />
+          {searchOpen && (
+            <div className="search-results" onMouseDown={(event) => event.preventDefault()}>
+              {searchLoading ? (
+                <div className="search-status">Loading…</div>
+              ) : searchResults.length ? (
+                searchResults.map((result, index) => (
+                  <button
+                    key={result.id ?? result.address ?? `result-${index}`}
+                    type="button"
+                    className="search-result"
+                    onClick={() => onSearchSelect(result)}
+                  >
+                    {formatSearchResult(result)}
+                  </button>
+                ))
+              ) : debouncedSearchQuery.trim() ? (
+                <div className="search-status">No results</div>
+              ) : null}
+            </div>
+          )}
+        </div>
         <DeckGL layers={layers} initialViewState={INITIAL_VIEW_STATE} controller={{ dragRotate: true, touchRotate: true }}>
           <Map
             mapLib={maplibregl}
             mapStyle="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
             attributionControl={true}
             onLoad={onMapLoad}
+            ref={mapRef}
           />
         </DeckGL>
         <div className="legend">
