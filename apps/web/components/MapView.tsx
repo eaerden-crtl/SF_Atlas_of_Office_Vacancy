@@ -402,14 +402,41 @@ export default function MapView() {
     setReportOpenById((prev) => ({ ...prev, [id]: false }));
   }, []);
 
+  const onMapLoad = useCallback((event: { target: maplibregl.Map }) => {
+    const map = event?.target;
+    const style = map?.getStyle();
+    const layers = style?.layers;
+    if (!layers) return;
+
+    const blockedSubstrings = ['road', 'street', 'highway', 'transport', 'bridge', 'tunnel'];
+    const protectedSubstrings = ['building', 'vacancy', 'base-buildings', 'vacancy-volumes'];
+
+    layers.forEach((layer) => {
+      if (!layer?.id) return;
+      const id = layer.id.toLowerCase();
+      if (protectedSubstrings.some((token) => id.includes(token))) return;
+
+      const isSymbol = layer.type === 'symbol';
+      const matchesBlocked = blockedSubstrings.some((token) => id.includes(token));
+      if (!isSymbol && !matchesBlocked) return;
+
+      try {
+        map.setLayoutProperty(layer.id, 'visibility', 'none');
+      } catch (error) {
+        console.warn('Unable to hide base map layer', layer.id, error);
+      }
+    });
+  }, []);
+
   return (
     <div className="layout">
       <div className="map-container">
         <DeckGL layers={layers} initialViewState={INITIAL_VIEW_STATE} controller={{ dragRotate: true, touchRotate: true }}>
           <Map
             mapLib={maplibregl}
-            mapStyle="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+            mapStyle="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
             attributionControl={true}
+            onLoad={onMapLoad}
           />
         </DeckGL>
         <div className="legend">
@@ -422,8 +449,9 @@ export default function MapView() {
         </div>
       </div>
       <aside className="sidebar">
-        <h2>Building details</h2>
         {selectedFeature ? (
+          <>
+            <h2>Building details</h2>
           <dl>
             {buildingName && (
               <>
@@ -510,8 +538,9 @@ export default function MapView() {
               </>
             )}
           </dl>
+          </>
         ) : (
-          <div className="placeholder">Click a building to view its attributes.</div>
+          <div className="placeholder">Select a building to display information</div>
         )}
       </aside>
     </div>
