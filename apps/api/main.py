@@ -2,25 +2,46 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
+import urllib.request
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 
 DATA_FILE = Path(__file__).resolve().parents[2] / "data" / "SF_Final.geojson"
+BRIDGE_URL = "http://127.0.0.1:8010/generate"
 
 app = FastAPI(title="SF Office Vacancy API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class GenerateModelRequest(BaseModel):
+    building_id: str
+    footprint_lonlat: List[List[float]]
+    height_m: float
+    stories: Optional[int] = None
+    vacancy_pct: Optional[float] = None
+    timestamp: str
+
+
+class GenerateModelResponse(BaseModel):
+    ok: bool
+    building_id: str
+    model_url: str
+    generated_at: str
+    notes: str
 
 
 def _normalize(text: str) -> str:
@@ -158,3 +179,41 @@ async def building_by_address(query: str = Query(..., min_length=1)):
 
     feature = best_entry["feature"] if best_entry else None
     return _build_building_response(feature, query)
+
+
+@app.post("/generate_model", response_model=GenerateModelResponse)
+async def generate_model(payload: GenerateModelRequest):
+    request_body = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    encoded = json.dumps(request_body).encode("utf-8")
+    request = urllib.request.Request(
+        BRIDGE_URL,
+        data=encoded,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            response_body = response.read().decode("utf-8")
+            status_code = response.status
+    except urllib.error.URLError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Bridge service unavailable at {BRIDGE_URL}: {exc}",
+        ) from exc
+
+    if status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Bridge error (status {status_code}).",
+        )
+
+    try:
+        payload = json.loads(response_body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Bridge response was not valid JSON.",
+        ) from exc
+
+    return payload

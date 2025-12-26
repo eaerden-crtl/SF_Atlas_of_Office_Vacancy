@@ -11,6 +11,7 @@ import bbox from '@turf/bbox';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { fetchBuildingByIdWithMeta, searchBuildings, type SearchResult } from '../src/lib/api';
 import { useDebouncedValue } from '../src/lib/search';
+import ModelViewer from './ModelViewer';
 
 interface BuildingProperties {
   id?: string;
@@ -36,6 +37,23 @@ interface BuildingProperties {
   [key: string]: unknown;
 }
 
+interface GenerateModelRequest {
+  building_id: string;
+  footprint_lonlat: number[][];
+  height_m: number;
+  stories: number | null;
+  vacancy_pct: number | null;
+  timestamp: string;
+}
+
+interface GenerateModelResponse {
+  ok: boolean;
+  building_id: string;
+  model_url: string;
+  generated_at: string;
+  notes?: string;
+}
+
 const INITIAL_VIEW_STATE = {
   longitude: -122.4194,
   latitude: 37.7749,
@@ -44,8 +62,9 @@ const INITIAL_VIEW_STATE = {
   bearing: -20
 };
 
-const BASE_COLOR = [190, 220, 235, 180] as const;
+const BASE_COLOR = [217, 242, 255, 210] as const;
 const BASE_HIGHLIGHT = [160, 200, 230, 240] as const;
+const BASE_MATERIAL = { ambient: 0.3, diffuse: 0.6, shininess: 8, specularColor: [255, 255, 255] } as const;
 const VACANCY_COLOR = [35, 60, 120, 220] as const;
 const VACANCY_HIGHLIGHT = [55, 90, 160, 240] as const;
 
@@ -102,6 +121,21 @@ function addBaseToGeometry(geometry: Geometry, base: number): Geometry {
 
 function addBaseToRing(ring: Position[], base: number): Position[] {
   return ring.map(([lng, lat]) => [lng, lat, base]);
+}
+
+function getFootprintLonLat(feature: BuildingFeature | null): number[][] {
+  if (!feature) return [];
+  const { geometry } = feature;
+  let ring: Position[] | undefined;
+
+  if (geometry.type === 'Polygon') {
+    ring = geometry.coordinates[0];
+  } else if (geometry.type === 'MultiPolygon') {
+    ring = geometry.coordinates[0]?.[0];
+  }
+
+  if (!ring) return [];
+  return ring.map(([lng, lat]) => [lng, lat]);
 }
 
 function isNormalizedCoordinate(position: Position): boolean {
@@ -285,6 +319,12 @@ export default function MapView() {
   const [draftAvailableAreaById, setDraftAvailableAreaById] = useState<Record<string, string>>({});
   const [submittedAvailableAreaById, setSubmittedAvailableAreaById] = useState<Record<string, number | undefined>>({});
   const [reportOpenById, setReportOpenById] = useState<Record<string, boolean>>({});
+  const [modelState, setModelState] = useState<{
+    status: 'idle' | 'loading' | 'ready' | 'error';
+    url?: string;
+    message?: string;
+    notes?: string;
+  }>({ status: 'idle' });
   const mapRef = useRef<MapRef | null>(null);
   const debouncedSearchQuery = useDebouncedValue(searchQuery, 300);
 
@@ -337,6 +377,10 @@ export default function MapView() {
       isActive = false;
     };
   }, [debouncedSearchQuery]);
+
+  useEffect(() => {
+    setModelState({ status: 'idle' });
+  }, [selectedId]);
 
   const zoomToGeometry = useCallback((geometry: Geometry) => {
     if (!mapRef.current) return;
@@ -446,6 +490,58 @@ export default function MapView() {
     selectBuildingFromApi(id, info.object);
   }, [selectBuildingFromApi]);
 
+  const handleGenerateModel = useCallback(async () => {
+    if (!selectedFeature || !selectedFeature.properties?.id) {
+      setModelState({ status: 'error', message: 'Select a building first.' });
+      return;
+    }
+
+    const props = selectedFeature.properties;
+    const payload: GenerateModelRequest = {
+      building_id: props.id,
+      footprint_lonlat: getFootprintLonLat(selectedFeature),
+      height_m: Number(props.height) || 0,
+      stories: getStories(props) ?? getFloors(props.height),
+      vacancy_pct:
+        typeof props.Percentage_vacant === 'number'
+          ? props.Percentage_vacant
+          : typeof props.percentage_vacant === 'number'
+            ? props.percentage_vacant
+            : null,
+      timestamp: new Date().toISOString()
+    };
+
+    setModelState({ status: 'loading' });
+
+    try {
+      const response = await fetch('http://127.0.0.1:8000/generate_model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        setModelState({ status: 'error', message: `Bridge error (${response.status}).` });
+        return;
+      }
+
+      const data = (await response.json()) as GenerateModelResponse;
+      if (!data.ok || !data.model_url) {
+        setModelState({ status: 'error', message: 'Model generation failed.' });
+        return;
+      }
+
+      setModelState({
+        status: 'ready',
+        url: `http://127.0.0.1:8010${data.model_url}`,
+        notes: data.notes
+      });
+    } catch (error) {
+      console.warn('Model generation failed', error);
+      setModelState({ status: 'error', message: 'Failed to reach the generator.' });
+    }
+  }, [selectedFeature]);
+
   const onSearchSelect = useCallback(
     (result: SearchResult) => {
       if (!result) return;
@@ -495,6 +591,7 @@ export default function MapView() {
       getElevation: (f: BuildingFeature) => Number(f.properties?.height) || 0,
       getFillColor: (f: BuildingFeature) => (f.properties?.id === selectedId ? BASE_HIGHLIGHT : BASE_COLOR),
       getLineColor: [120, 160, 190],
+      material: BASE_MATERIAL,
       onClick: onFeatureClick,
       updateTriggers: {
         getFillColor: [selectedId]
@@ -534,7 +631,8 @@ export default function MapView() {
       filled: true,
       getElevation: (f: BuildingFeature) => Number(f.properties?.height) || 0,
       getFillColor: BASE_HIGHLIGHT,
-      getLineColor: [120, 160, 190]
+      getLineColor: [120, 160, 190],
+      material: BASE_MATERIAL
     });
   }, [selectedOverlayFeature]);
 
@@ -770,6 +868,20 @@ export default function MapView() {
               </>
             )}
           </dl>
+          <div className="model-actions">
+            <button type="button" onClick={handleGenerateModel} disabled={modelState.status === 'loading'}>
+              {modelState.status === 'loading' ? 'Generating…' : 'Generate model'}
+            </button>
+            {modelState.status === 'error' && modelState.message && (
+              <div className="search-status">{modelState.message}</div>
+            )}
+            {modelState.status === 'ready' && modelState.url && (
+              <>
+                <ModelViewer className="model-viewer" src={modelState.url} />
+                {modelState.notes && <div className="search-status">{modelState.notes}</div>}
+              </>
+            )}
+          </div>
           </>
         ) : (
           <div className="placeholder">Select a building to display information</div>
